@@ -488,6 +488,7 @@ struct Environment {
           {"divmod",
            std::make_shared<BuiltinFunction>(aten::divmod, at::nullopt)},
           {"list", SpecialFormValue::create(prim::list)},
+          {"dict", SpecialFormValue::create(prim::dict)},
           {"ord", std::make_shared<BuiltinFunction>(aten::ord, at::nullopt)},
           {"chr", std::make_shared<BuiltinFunction>(aten::chr, at::nullopt)},
           {"bin", std::make_shared<BuiltinFunction>(aten::bin, at::nullopt)},
@@ -3007,6 +3008,100 @@ struct to_ir {
         auto lc = ListComp::create(apply.range(), ident, ident, iter);
         return std::make_shared<SimpleValue>(
             emitListComprehension(lc, type_hint));
+      }
+      case prim::dict: {
+        // Set the type
+        TypePtr type = type_hint;
+        if (type_hint) {
+          if (!type_hint->cast<DictType>()) {
+            throw ErrorReport(apply.range())
+                << "Expected dict type annotation for dict(), found "
+                << type_hint->repr_str();
+          }
+        } else {
+          // Otherwise, use the default of Dict[str, Tensor]. If we have an
+          // iterable in apply.inputs(), then this default type will be
+          // overridden when the iterable is emitted
+          type = DictType::create(StringType::get(), TensorType::get());
+        }
+
+        // If we have an empty call to dict()
+        if (apply.inputs().empty() && apply.attributes().empty()) {
+          return std::make_shared<SimpleValue>(
+              graph
+                  ->insertNode(graph->createDict(
+                      type->expect<DictType>()->getKeyType(),
+                      type->expect<DictType>()->getValueType(),
+                      {},
+                      {}))
+                  ->output());
+        }
+
+        // We can't feasibly register all possible key x value
+        // combinations of new prim ops for the case that we use the
+        // constructor with a dict literal. It makes much more sense
+        // to transform the dict literal into a list of tuples so that
+        // we can use the existing constructors
+        if (!apply.inputs().empty() &&
+            apply.inputs()[0].kind() == TK_DICT_LITERAL) {
+          auto dict_lit = DictLiteral(apply.inputs()[0]);
+          std::vector<Expr> zipped;
+          zipped.reserve(dict_lit.key_inputs().size());
+          TORCH_INTERNAL_ASSERT(
+              dict_lit.key_inputs().size() == dict_lit.value_inputs().size());
+          for (auto key_it = dict_lit.key_inputs().begin(),
+                    val_it = dict_lit.value_inputs().begin();
+               key_it != dict_lit.key_inputs().end();
+               ++key_it, ++val_it) {
+            auto tuple_inputs =
+                List<Expr>::create(apply.range(), {*key_it, *val_it});
+            auto tuple = TupleLiteral::create(apply.range(), tuple_inputs);
+            zipped.push_back(tuple);
+          }
+          auto ll_values = List<Expr>::create(apply.range(), zipped);
+          auto ll = ListLiteral::create(apply.range(), ll_values);
+          auto expr_list = List<Expr>::create(apply.range(), {ll});
+          // Change `apply` to a new Apply node holding a list of
+          // tuples
+          apply = Apply::create(
+              apply.range(), apply.callee(), expr_list, apply.attributes());
+        }
+
+        // If we have kwargs to include, we'll take a similar approach
+        // to the above logic and standardize the Apply node
+        if (!apply.attributes().empty()) {
+          std::vector<Expr> exprs;
+          // Gather all the existing tuples in the input iterable
+          if (!apply.inputs().empty()) {
+            auto tuple_list = ListLiteral(apply.inputs()[0]).inputs();
+            for (auto tuple : tuple_list) {
+              exprs.push_back(tuple);
+            }
+          }
+          // Create tuples out of each kwarg and gather them as well
+          for (auto attr : apply.attributes()) {
+            auto k = StringLiteral::create(apply.range(), attr.name().name());
+            auto v = attr.value();
+            auto tuple_inputs = List<Expr>::create(apply.range(), {k, v});
+            auto tuple = TupleLiteral::create(apply.range(), tuple_inputs);
+            exprs.push_back(tuple);
+          }
+          auto expr_list = List<Expr>::create(apply.range(), {exprs});
+          auto ll = ListLiteral::create(apply.range(), expr_list);
+          auto new_inputs = List<Expr>::create(apply.range(), {ll});
+          auto new_kwargs = List<Attribute>::create(apply.range(), {});
+          apply = Apply::create(
+              apply.range(), apply.callee(), new_inputs, new_kwargs);
+        }
+
+        checkApplyNumInputs(apply, 1);
+
+        auto iter_input = emitSugaredExpr(apply.inputs()[0], 1);
+
+        auto simple = asSimple(iter_input);
+
+        return std::make_shared<SimpleValue>(emitBuiltinCall(
+            apply.range(), *method.graph(), aten::dict, {simple}, {}));
       }
       default:
         TORCH_INTERNAL_ASSERT(false, "unknown special form: ", form);
