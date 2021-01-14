@@ -94,7 +94,7 @@ static inline int64_t matrixStride(const Tensor& batched_matrices) {
 // indices for `a` were already accessed. If they were, we copy the data from the buffer
 // into `a`. The number of copies does not exceed 
 // prod(max(a.shape[:-2], b.shape[:-2]) - a.shape[:-2] + 1)
-// and this value is attained for tensors with non-empty batch dimensions.
+// and this value is attained by tensors with non-empty batch dimensions.
 //
 // func_t `f` is a callable that is being supplied with
 // scalar_t* a_working_ptr, scalar_t* b_working_ptr, int64_t a_linear_batch_idx.
