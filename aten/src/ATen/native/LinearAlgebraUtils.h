@@ -92,7 +92,8 @@ static inline int64_t matrixStride(const Tensor& batched_matrices) {
 // then instead of materializing copies of `a` in the broadcasted shape, we keep
 // a buffer copy of `a` along with flags that check whether specific batch dimension
 // indices for `a` were already accessed. If they were, we copy the data from the buffer
-// into `a`. The number of copies does not exceed prod(max(a.shape[:-2], b.shape[:-2))
+// into `a`. The number of copies does not exceed 
+// prod(max(a.shape[:-2], b.shape[:-2]) - a.shape[:-2] + 1)
 // and this value is attained for tensors with non-empty batch dimensions.
 //
 // func_t `f` is a callable that is being supplied with
